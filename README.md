@@ -124,23 +124,6 @@ yolo11n.pt                     # detection model (optional, auto-downloaded by U
 yolo11s-pose.pt                # pose model (optional)
 ```
 
----
-
-## 🧪 Tested Environments
-
-| Platform | Backend | Notes |
-|-----------|----------|-------|
-| Windows 11 + AMD iGPU | DirectML | Works smoothly at 20–30 FPS |
-| Ubuntu 22.04 + CPU | CPUExecutionProvider | 8–15 FPS on i5-8500 |
-| Windows + Hailo-8 SDK | HailoExecutionProvider | Experimental support |
-
----
-
-## 📄 License
-MIT License © 2025 Johnny Jiang  
-Feel free to use, modify, and distribute.
-
----
 
 ## 🖼️ Preview (Pose Mode)
 
