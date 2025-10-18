@@ -124,9 +124,25 @@ yolo11n.pt                     # detection model (optional, auto-downloaded by U
 yolo11s-pose.pt                # pose model (optional)
 ```
 
-
-## 🖼️ Preview (Pose Mode)
-
-![pose_demo](docs/pose_demo.jpg)
-
 ---
+
+## ❗ Troubleshooting
+
+If you encounter an error like:
+
+```
+RuntimeError: Specified --provider dml, but no DmlExecutionProvider found.
+Please install onnxruntime-directml.
+```
+
+It means that the **DirectML Execution Provider** is not properly installed or detected.
+
+Run the following commands to fix the issue:
+
+```bash
+pip uninstall -y onnxruntime onnxruntime-gpu onnxruntime-directml
+pip install --upgrade pip
+pip install onnxruntime-directml
+```
+
+If the installation still fails with “no matching distribution found,” make sure you are using **Python 3.10+ (64-bit)** on **Windows**.
