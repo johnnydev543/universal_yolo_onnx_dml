@@ -1,4 +1,5 @@
 import os, sys, time, queue, threading, argparse
+from typing import Optional, Any, Dict, cast
 import cv2, numpy as np
 
 # -------------------------
@@ -20,9 +21,12 @@ def get_youtube_stream(url: str, prefer_height=480):
     if not YTDL_AVAILABLE:
         raise RuntimeError("請先 pip install yt-dlp 以支援 YouTube 來源")
     fmt = f"best[ext=mp4][height<={prefer_height}]/best[height<={prefer_height}]/best"
-    ydl_opts = {"quiet": True, "skip_download": True, "format": fmt}
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+    ydl_opts: Dict[str, Any] = {"quiet": True, "skip_download": True, "format": fmt}
+    # yt_dlp typings are not strict here; ignore for type-checkers
+    with yt_dlp.YoutubeDL(ydl_opts):  # type: ignore[arg-type]
+        ydl = yt_dlp.YoutubeDL(ydl_opts)  # type: ignore[call-arg]
         info = ydl.extract_info(url, download=False)
+        info = cast(Dict[str, Any], info)
         # 盡量拿到 fps；若無就回 None，由下游估算
         fps = info.get("fps")
         if fps is None and "requested_formats" in info and info["requested_formats"]:
@@ -103,19 +107,96 @@ def create_ort_session(onnx_path: str, force_cpu=False, provider: str = "auto"):
 
 def ensure_onnx_model(pt_path: str, onnx_path: str, imgsz=640):
     """
-    若指定的 .onnx 檔不存在，從 .pt 模型匯出 ONNX。
-    若存在，則直接使用。
+    Ensure the ONNX file exists at onnx_path.
+    If missing, export from a YOLO .pt model.
+    - If pt_path does not exist locally, try using its basename so Ultralytics can auto-download (e.g., "yolo11s.pt").
+    - If Ultralytics returns a different export location, copy to onnx_path.
     """
-    import os
+    import os, shutil
     if os.path.exists(onnx_path):
         print(f"[Model] 使用現有 {onnx_path}")
         return
 
+    print(f"[Model] 找不到 {onnx_path}，準備從 {pt_path} 匯出 ONNX（imgsz={imgsz}）")
+
+    try:
+        # import dynamically to satisfy type-checkers that may not expose YOLO at top-level
+        from importlib import import_module
+        ultralytics_mod = import_module('ultralytics')
+        YOLO = getattr(ultralytics_mod, 'YOLO', None)
+        if YOLO is None:
+            sub = import_module('ultralytics.yolo')
+            YOLO = getattr(sub, 'YOLO')
+    except Exception:
+        raise ImportError("請先安裝 ultralytics： pip install ultralytics")
+
+    load_arg = pt_path
+    if not os.path.exists(pt_path):
+        # fallback to basename so Ultralytics can fetch official weights
+        load_arg = os.path.basename(pt_path)
+        print(f"[Model] {pt_path} 不存在，改用 {load_arg} 嘗試由 Ultralytics 下載")
+
+    model = YOLO(load_arg)
+    # If Ultralytics downloaded the .pt into CWD as the basename, move it into our models dir
+    base_pt = os.path.basename(pt_path)
+    try:
+        if not os.path.exists(pt_path) and os.path.exists(base_pt):
+            odir = os.path.dirname(os.path.abspath(pt_path)) or "."
+            os.makedirs(odir, exist_ok=True)
+            try:
+                shutil.move(base_pt, pt_path)
+                print(f"[Model] 下載的權重 {base_pt} 已移動到 {pt_path}")
+            except Exception as _e:
+                # Fall back to copy if move fails
+                try:
+                    shutil.copyfile(base_pt, pt_path)
+                    print(f"[Model] 下載的權重 {base_pt} 已複製到 {pt_path}")
+                except Exception as e:
+                    print(f"[Model] 無法移動/複製下載的權重 {base_pt} → {pt_path}: {e}")
+    except Exception:
+        pass
+
+    # Make sure target directory exists
+    odir = os.path.dirname(os.path.abspath(onnx_path)) or "."
+    os.makedirs(odir, exist_ok=True)
+
+    # Export to ONNX
+    res = model.export(format="onnx", opset=20, dynamic=False, imgsz=imgsz, simplify=True)
+    # Try to resolve exported path(s)
+    candidate_paths = []
+    if isinstance(res, (str, os.PathLike)):
+        candidate_paths.append(str(res))
+    # Common fallback filenames in CWD
+    base_try = os.path.basename(onnx_path)
+    candidate_paths += [base_try, "model.onnx", "weights.onnx"]
+
+    copied = False
+    for cand in candidate_paths:
+        if cand and os.path.exists(cand):
+            try:
+                shutil.copyfile(cand, onnx_path)
+                print(f"[Model] 已匯出並複製到 {onnx_path}")
+                copied = True
+                break
+            except Exception as e:
+                print(f"[Model] 複製 {cand} → {onnx_path} 失敗：{e}")
+
+    if not os.path.exists(onnx_path):
+        if copied:
+            return
+        raise FileNotFoundError(f"ONNX 匯出完成但未在預期位置找到：{onnx_path}。請檢查 Ultralytics 的輸出目錄並手動移動。")
+
+
     print(f"[Model] 找不到 {onnx_path}，從 {pt_path} 匯出 ONNX（imgsz={imgsz}）")
 
     try:
-        from ultralytics import YOLO
-    except ImportError:
+        from importlib import import_module
+        ultralytics_mod = import_module('ultralytics')
+        YOLO = getattr(ultralytics_mod, 'YOLO', None)
+        if YOLO is None:
+            sub = import_module('ultralytics.yolo')
+            YOLO = getattr(sub, 'YOLO')
+    except Exception:
         raise ImportError("請先安裝 ultralytics： pip install ultralytics")
 
     model = YOLO(pt_path)
@@ -324,6 +405,21 @@ def postprocess_pose(pred, orig_shape, r, dw, dh, conf_thres=0.25, kpt_thres=0.2
     return [(xyxy[i], det_conf[i], kpts_out[i]) for i in range(len(xyxy))]
 
 
+def _is_pose_output(arr: np.ndarray) -> bool:
+    """
+    Heuristic: YOLO pose ONNX typically has width >= 55 (4 box + 1 conf + 17*3 kpts = 56).
+    Detection exports are commonly 6 / 84 / 85-wide or similar.
+    Accepts shapes like (1,N,C) or (N,C); transposes will be handled downstream.
+    """
+    if arr.ndim == 3:  # (1, N, C)
+        c = arr.shape[2]
+    elif arr.ndim == 2:  # (N, C)
+        c = arr.shape[1]
+    else:
+        return False
+    return c >= 55 and (c % 3 in (1, 2) or c == 56)  # loose check: allow 56 or >=55
+
+
 # 內建 COCO80 名稱（若沒給 --names 就用這個）
 COCO80 = [
     'person','bicycle','car','motorcycle','airplane','bus','train','truck','boat','traffic light',
@@ -337,7 +433,7 @@ COCO80 = [
     'vase','scissors','teddy bear','hair drier','toothbrush'
 ]
 
-def load_names(path: str | None):
+def load_names(path: Optional[str]):
     if not path:
         return COCO80
     try:
@@ -352,14 +448,52 @@ def load_names(path: str | None):
 # -------------------------
 # 繪製：Detect
 # -------------------------
+
+# -------------------------
+# 顏色：固定常見類別配色 + 其餘用等距色盤
+# -------------------------
+# COCO80 常見類別的固定 BGR 色碼（可自行調整）
+CLASS_COLOR_MAP = {
+    0:  (0, 255, 0),     # person - green
+    1:  (255, 0, 0),     # bicycle - blue
+    2:  (0, 0, 255),     # car - red
+    3:  (255, 128, 0),   # motorcycle - light blue-ish (BGR)
+    5:  (0, 165, 255),   # bus - orange
+    7:  (128, 0, 128),   # truck - purple
+    15: (128, 128, 255), # cat - light red
+    16: (0, 255, 255),   # dog - yellow
+    39: (0, 128, 255),   # bottle - amber
+    56: (255, 255, 0),   # chair - cyan
+}
+
+def _hsv_even_color(idx: int, total: int = 80):
+    # OpenCV HSV uses H:[0,179]
+    hue = int((idx % total) * (180 / max(1, total)))
+    hsv = np.array([[[hue, 200, 255]]], dtype=np.uint8)
+    # cv2 type stubs can be strict; cast result to ndarray for indexing
+    bgr = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)  # type: ignore[arg-type]
+    bgr = bgr[0, 0]
+    return int(bgr[0]), int(bgr[1]), int(bgr[2])
+
+def get_class_color(cls_id: int, total_classes: Optional[int] = None):
+    if cls_id in CLASS_COLOR_MAP:
+        return CLASS_COLOR_MAP[cls_id]
+    return _hsv_even_color(cls_id, 80 if total_classes is None else total_classes)
+
 def draw_detect(frame, dets, names=None):
     names = names or COCO80
     n = len(names)
     for (x1,y1,x2,y2), c, cls in dets:
         p1, p2 = (int(x1), int(y1)), (int(x2), int(y2))
-        cv2.rectangle(frame, p1, p2, (0,255,0), 2)
-        label = f"{names[cls] if 0 <= cls < n else cls} {c:.2f}"
-        cv2.putText(frame, label, (p1[0], p1[1]-6),
+        color = get_class_color(int(cls), n)
+        # box
+        cv2.rectangle(frame, p1, p2, color, 2, cv2.LINE_AA)
+        # label
+        label_txt = f"{names[cls] if 0 <= cls < n else cls} {c:.2f}"
+        (tw, th), baseline = cv2.getTextSize(label_txt, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+        th = th + baseline + 4
+        cv2.rectangle(frame, (p1[0], p1[1]-th), (p1[0]+tw+4, p1[1]), color, -1, cv2.LINE_AA)
+        cv2.putText(frame, label_txt, (p1[0]+2, p1[1]-4),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1, cv2.LINE_AA)
     return frame
 
@@ -380,12 +514,13 @@ COCO_PAIRS_COLORED = [
     ((0,2), (255,0,255)), ((2,4), (255,0,255)),      # 鼻-右眼-右耳
 ]
 
-def draw_pose(frame, dets, kpt_thres=0.20):
+def draw_pose(frame, dets, kpt_thres=0.20, show_bbox=True):
     for (x1, y1, x2, y2), c, kpts in dets:
         p1, p2 = (int(x1), int(y1)), (int(x2), int(y2))
-        cv2.rectangle(frame, p1, p2, (200,200,200), 1)
-        cv2.putText(frame, f"{c:.2f}", (p1[0], p1[1]-5),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1, cv2.LINE_AA)
+        if show_bbox:
+            cv2.rectangle(frame, p1, p2, (200,200,200), 1)
+            cv2.putText(frame, f"{c:.2f}", (p1[0], p1[1]-5),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255,255,255), 1, cv2.LINE_AA)
 
         pts = []
         for i in range(kpts.shape[0]):
@@ -413,7 +548,8 @@ class FrameGrabber(threading.Thread):
         self.period = 1.0 / self.fps
         self.q = queue.Queue(maxsize=2)
         self.stop_event = threading.Event()
-        self.cap = None
+        # annotate as Any so static type-checkers won't assume None and flag attribute access
+        self.cap: Any = None
         self.fail = 0
 
     def open(self):
@@ -480,8 +616,9 @@ def main():
     ap.add_argument("--source", "-s", default="0",
                     help="來源：webcam index（如 0）、檔案路徑、rtsp/http url、YouTube 連結")
     ap.add_argument("--pose", action="store_true", help="使用 yolo11s-pose（骨架）")
+    ap.add_argument("--pose-no-box", action="store_true", help="骨架模式下隱藏人框與信心分數")
     ap.add_argument("--pt", default=None, help="自訂 .pt 路徑（預設 detect: yolo11n.pt / pose: yolo11s-pose.pt）")
-    ap.add_argument("--onnx", default=None, help="自訂 .onnx 路徑（預設 detect: yolo11n.onnx / pose: yolo11s-pose.onnx）")
+    ap.add_argument("--onnx", default=None, help="自訂 .onnx 路徑（預設 detect: yolo11s.onnx / pose: yolo11s-pose.onnx）")
     ap.add_argument("--conf", type=float, default=0.25)
     ap.add_argument("--iou", type=float, default=0.50)
     ap.add_argument("--kpt", type=float, default=0.20, help="pose keypoint 顯示門檻")
@@ -500,9 +637,35 @@ def main():
     NAMES = load_names(args.names)
 
     USE_POSE = args.pose
-    PT_MODEL = args.pt if args.pt else ("yolo11s-pose.pt" if USE_POSE else "yolo11n.pt")
-    ONNX_MODEL = args.onnx if args.onnx else ("yolo11s-pose.onnx" if USE_POSE else "yolo11n.onnx")
+    base_dir = "./models"
+    PT_MODEL = args.pt if args.pt else (f"{base_dir}/yolo11s-pose.pt" if USE_POSE else f"{base_dir}/yolo11s.pt")
+    ONNX_MODEL = args.onnx if args.onnx else (f"{base_dir}/yolo11s-pose.onnx" if USE_POSE else f"{base_dir}/yolo11s.onnx")
     CLASSES = None
+
+    # If --pose is set and user didn't explicitly pass --onnx, force pose paths
+    if USE_POSE and (args.onnx is None):
+        PT_MODEL = f"{base_dir}/yolo11s-pose.pt"
+        ONNX_MODEL = f"{base_dir}/yolo11s-pose.onnx"
+
+    print(f"[Mode] pose={USE_POSE}, pt={PT_MODEL}, onnx={ONNX_MODEL}")
+
+
+    # --- visibility: show mode & model paths ---
+    print(f"[Mode] pose={USE_POSE}, pt={PT_MODEL}, onnx={ONNX_MODEL}")
+
+    # --- safety guard: if --pose is set but model path doesn't look like a pose model, auto-correct ---
+    import os
+    if USE_POSE and ("pose" not in os.path.basename(ONNX_MODEL).lower()):
+        fallback_pose_onnx = os.path.join("./models", "yolo11s-pose.onnx")
+        fallback_pose_pt   = os.path.join("./models", "yolo11s-pose.pt")
+        print(f"[Guard] --pose is set but ONNX model looks like a detect model: {ONNX_MODEL}")
+        if os.path.exists(fallback_pose_onnx) or os.path.exists(fallback_pose_pt):
+            print(f"[Guard] Switching to pose defaults: onnx={fallback_pose_onnx}, pt={fallback_pose_pt}")
+            ONNX_MODEL = fallback_pose_onnx
+            PT_MODEL   = fallback_pose_pt
+        else:
+            print("[Guard] Pose defaults not found yet; will export from PT name/basename if needed.")
+
     if (not USE_POSE) and args.classes:
         CLASSES = [int(x) for x in args.classes.split(",") if x.strip().isdigit()]
 
@@ -511,6 +674,9 @@ def main():
     print(f"[Source] {source}  (fps_hint={fps_hint})")
 
     # 準備 ONNX
+    # 確保 ./models 目錄存在
+    import os
+    os.makedirs("./models", exist_ok=True)
     ensure_onnx_model(PT_MODEL, ONNX_MODEL, imgsz=640)
 
     sess, in_name, out_name, IMG = create_ort_session(
@@ -518,6 +684,27 @@ def main():
         force_cpu=args.force_cpu,
         provider=args.provider
     )
+
+    # --- Runtime sanity check: detect vs pose model by output shape ---
+    try:
+        # create a tiny dummy input to inspect output channel count
+        dummy = np.zeros((1, 3, IMG, IMG), dtype=np.float32)
+        pred_shape = None
+        try:
+            _tmp = sess.run([out_name], {in_name: dummy})[0]
+            arr = np.array(_tmp)
+            if arr.ndim == 3:
+                arr = arr[0]
+            pred_shape = arr.shape[1] if arr.ndim >= 2 else None
+        except Exception as e:
+            print(f"[Sanity] Inference probe failed: {e}")
+        if pred_shape is not None:
+            if USE_POSE and pred_shape not in (56, 57):  # typical pose heads
+                print(f"[Sanity] --pose set but model looks like DETECT head (channels={pred_shape}).")
+            if (not USE_POSE) and pred_shape in (56, 57):
+                print(f"[Sanity] Detect mode but model looks like POSE head (channels={pred_shape}).")
+    except Exception as _e:
+        print(f"[Sanity] check skipped: {_e}")
 
     # 啟動讀取執行緒
     grabber = FrameGrabber(source, fps_hint=fps_hint)
@@ -531,6 +718,7 @@ def main():
     last_dets = []
     MAX_CONSEC_FAIL = 200
     consec_fail = 0
+    annotated = None
 
     try:
         while True:
@@ -553,7 +741,7 @@ def main():
                         pred, frame.shape, r, dw, dh,
                         conf_thres=args.conf, kpt_thres=args.kpt
                     )
-                    annotated = draw_pose(frame, last_dets, kpt_thres=args.kpt)
+                    annotated = draw_pose(frame, last_dets, kpt_thres=args.kpt, show_bbox=not args.pose_no_box)
 
                 else:
                     last_dets = postprocess_detect(
@@ -561,9 +749,9 @@ def main():
                         conf_thres=args.conf, iou_thres=args.iou, classes=CLASSES
                     )
                     annotated = draw_detect(frame, last_dets, names=NAMES)
-
-
-            annotated = draw_pose(frame, last_dets, kpt_thres=args.kpt) if USE_POSE else draw_detect(frame, last_dets)
+            # Re-draw only when not processing this frame
+            if frame_id % args.process_every != 0:
+                annotated = draw_pose(frame, last_dets, kpt_thres=args.kpt, show_bbox=not args.pose_no_box) if USE_POSE else draw_detect(frame, last_dets, names=NAMES)
 
             # 顯示節流
             now = time.perf_counter()
@@ -572,7 +760,8 @@ def main():
                 time.sleep(sleep)
             last_show = time.perf_counter()
 
-            cv2.imshow("YOLO (Universal, ONNX + DirectML)", annotated)
+            if annotated is not None:
+                cv2.imshow("YOLO (Universal, ONNX + DirectML)", annotated)
             key = cv2.waitKey(1) & 0xFF
             if key in (27, ord('q')):
                 break
