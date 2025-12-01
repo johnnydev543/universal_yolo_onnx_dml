@@ -1,148 +1,142 @@
-# Universal YOLO ONNX Runtime (DirectML / Hailo / CPU)
+\# Universal YOLO ONNX Runtime (DirectML / Hailo / CPU)
 
-A single Python script for real-time object detection **and pose estimation**  
-that supports **any video source** and multiple backends:
+一個模組化的 Python 專案，用於實時物件偵測、姿態估計和**\*\*物件計數\*\***。  
+專案已重構為服務層和應用層，以提高重用性和可維護性。
 
-- ✅ YouTube, RTSP, HTTP, local video, or webcam  
-- ✅ Backends: **AMD iGPU (DirectML)**, **Hailo-8 NPU**, or **CPU fallback**  
-- ✅ Models: **YOLO11n** (object detection) and **YOLO11s-pose** (pose / skeleton)
-- ✅ Output: Realtime OpenCV window with labels, colored skeletons, and FPS-adaptive throttling  
-- ✅ Written in pure Python — no GUI frameworks, just `onnxruntime`, `ultralytics`, and `opencv-python`
+\- ✅ **\*\*模組化服務:\*\*** 核心推論邏輯封裝在 \`yolo\_service.py\` 中。  
+\- ✅ **\*\*專用應用:\*\*** 透過 \`count\_app.py\` 專注於無視覺輸出的計數任務。  
+\- ✅ **\*\*模型目錄:\*\*** 所有模型自動存儲和讀取自 \`models/\` 目錄。  
+\- ✅ **\*\*多種後端:\*\*** 支援 **\*\*AMD iGPU (DirectML)\*\***, **\*\*Hailo-8 NPU\*\***, 或 **\*\*CPU fallback\*\***。  
+\- ✅ **\*\*豐富來源:\*\*** 支援 YouTube 連結, RTSP 串流, HTTP 視訊, 本地檔案或網路攝像頭。
 
----
+\---
 
-## ✨ Features
-
-| Feature | Description |
-|----------|--------------|
-| 🎥 Source | YouTube link, RTSP stream, HTTP video, local file, or webcam index |
-| ⚙️ Backend | ONNX Runtime: DirectML (AMD GPU), HailoExecutionProvider, or CPU |
-| 🧍‍♂️ Pose mode | YOLO pose model with multi-color skeleton visualization |
-| 🧠 Model export | Automatically converts `.pt` → `.onnx` if not found |
-| 💬 Labels | Displays human-readable class names (COCO80 or custom) |
-| 🧩 Configurable | Thresholds, NMS, processing interval, class filter, keypoint threshold |
-| ⚡ Efficiency | Frame-grabber thread + frame skipping + adaptive FPS pacing |
-
----
-
-## 🧰 Requirements
+\#\# 🧰 Requirements
 
 Python ≥ 3.10
 
-```bash
+\`\`\`bash  
 pip install onnxruntime-directml ultralytics opencv-python yt-dlp
-```
 
-> 💡 For Hailo-8 users  
-> Install Hailo SDK and ONNX Runtime Execution Provider for Hailo  
-> (should make `'HailoExecutionProvider'` appear in `onnxruntime.get_available_providers()`).
+*注意：如果遇到 onnxruntime 相關的 ImportError，請確保您的 onnxruntime 版本與 Python 3.12 兼容。*
 
 ---
 
-## 🚀 Usage
+## **🚀 專案結構 (Files)**
 
-### 1️⃣ Webcam
-```bash
-python universal_yolo_onnx_dml.py --source 0
-```
+專案已重構為以下模組：
 
-### 2️⃣ Local video / RTSP / HTTP stream
-```bash
-python universal_yolo_onnx_dml.py --source ./video.mp4
-python universal_yolo_onnx_dml.py --source rtsp://user:pass@ip:554/stream
-```
-
-### 3️⃣ YouTube
-```bash
-python universal_yolo_onnx_dml.py --source "https://youtu.be/abcd1234"
-```
-
-### 4️⃣ Pose Estimation (skeleton mode)
-```bash
-python universal_yolo_onnx_dml.py --source 0 --pose
-```
-
-### 5️⃣ Select backend
-```bash
-# AMD iGPU (DirectML)
-python universal_yolo_onnx_dml.py --source 0 --provider dml
-
-# CPU only
-python universal_yolo_onnx_dml.py --source 0 --provider cpu
-
-# Hailo-8 (requires SDK + EP)
-python universal_yolo_onnx_dml.py --source 0 --provider hailo
-```
-
-### 6️⃣ Extra options
-| Option | Description |
-|--------|-------------|
-| `--conf 0.25` | Confidence threshold |
-| `--iou 0.45` | IoU threshold (detect) |
-| `--classes 0,2` | Only track specific classes (e.g. person, car) |
-| `--process-every 2` | Run inference every 2 frames (energy saving) |
-| `--names my_labels.txt` | Custom class names file |
-| `--prefer-height 480` | YouTube stream quality preference |
-| `--force-cpu` | Force CPU inference even if GPU is present |
+| 檔案 | 職責 |
+| :---- | :---- |
+| yolo\_service.py | **核心服務**。封裝所有推論、追蹤、硬體和視訊I/O邏輯，並作為主要的視覺化 CLI 入口。 |
+| count\_app.py | **專用應用入口**。匯入 yolo\_service，運行純計數邏輯，無視覺輸出。 |
+| hardware\_manager.py | 處理模型轉換 (.pt → .onnx) 和 ONNX Runtime Session 初始化。 |
+| inference\_engine.py | 處理幀的預處理、推論執行和後處理。 |
+| tracker\_module.py | 實現物件追蹤 (IoU Tracker)。 |
+| visualizer.py | 處理所有繪圖、標籤和統計視覺化。 |
+| video\_source.py | 處理所有視訊源 I/O (Webcam, File, YouTube, FrameGrabber Thread)。 |
+| models/ | **所有模型** (.pt 和 .onnx) 的存放目錄。 |
 
 ---
 
-## 🧩 Example Outputs
+## **✨ 執行方式 (Usage)**
 
-| Mode | Description |
-|------|--------------|
-| **Detect** | YOLO11n bounding boxes + class names + confidence |
-| **Pose** | YOLO11s-pose with colored skeleton and per-person confidence |
+### **1\. 視覺化和追蹤 (使用 yolo\_service.py)**
 
----
+這是舊版 main.py 的功能，現在由服務模組接管。
 
-## 🧠 Architecture Overview
+Bash
 
-```
-YouTube / RTSP / File / Webcam
-   ↓
-FrameGrabber Thread  ←─ throttled by source FPS
-   ↓
-preprocess(frame)
-   ↓
-ONNX Runtime Inference (DirectML / Hailo / CPU)
-   ↓
-postprocess_detect / postprocess_pose
-   ↓
-draw_detect / draw_pose
-   ↓
-OpenCV display
-```
+\# 運行 Webcam 0，啟用追蹤  
+python yolo\_service.py \--source 0 \--tracker
 
----
+\# 運行 YouTube 連結，強制使用 CPU  
+python yolo\_service.py \--source "\[https://www.youtube.com/watch?v=\](https://www.youtube.com/watch?v=)..." \--provider cpu
 
-## 📦 Files
+\# 運行並使用姿態估計模型  
+python yolo\_service.py \--source video.mp4 \--pose
 
-```
-universal_yolo_onnx_dml.py     # main script
-yolo11n.pt                     # detection model (optional, auto-downloaded by Ultralytics)
-yolo11s-pose.pt                # pose model (optional)
-```
+### **2\. 純物件計數 (使用 count\_app.py)**
+
+此應用程式專門用於計數，預設禁用視覺化輸出 (--no-display)，並建議啟用追蹤 (--tracker) 以穩定計數結果。
+
+Bash
+
+\# 運行視訊檔案，在終端機中輸出計數結果 (每 5 幀處理一次)  
+python count\_app.py \--source my\_people.mp4 \--process-every 5
 
 ---
 
-## ❗ Troubleshooting
+## **⚙️ 參數選項 (Arguments)**
 
-If you encounter an error like:
+| 參數 | 預設值 | 說明 |
+| :---- | :---- | :---- |
+| \--source | 0 | 視訊源 (Webcam 索引、檔案路徑或 URL) |
+| \--detect-model | yolo11s.pt | 偵測模型檔名 (存放在 models/ 目錄下) |
+| \--pose-model | yolo11s-pose.pt | 姿態模型檔名 (存放在 models/ 目錄下) |
+| \--pose | False | 啟用姿態估計模式 |
+| \--tracker | False | 啟用物件追蹤 (僅限偵測模式) |
+| \--provider | auto | ONNX Execution Provider (auto, dml, hailo, cpu) |
+| \--force-cpu | False | 即使 GPU 存在，仍強制使用 CPU 推論 |
+| \--conf | 0.25 | 信心分數門檻 |
+| \--no-display | False | 禁用視覺輸出 (僅在終端機中列印統計資訊) |
+| \--process-every | 1 | 每 N 幀進行一次推論處理 (節省性能) |
+| \--names | None | 自定義類別名稱檔案路徑 |
+| \--prefer-height | 480 | YouTube 串流解析度偏好 |
 
-```
-RuntimeError: Specified --provider dml, but no DmlExecutionProvider found.
-Please install onnxruntime-directml.
-```
+---
 
-It means that the **DirectML Execution Provider** is not properly installed or detected.
+## **🧠 架構概覽 (Architecture Overview)**
 
-Run the following commands to fix the issue:
+專案現在劃分為清晰的層次：
 
-```bash
-pip uninstall -y onnxruntime onnxruntime-gpu onnxruntime-directml
-pip install --upgrade pip
+1. **I/O 層:** video\_source.py (FrameGrabber Thread) 負責穩定地讀取視訊幀。  
+2. **服務層 (YOLOService):**  
+   * hardware\_manager 準備模型。  
+   * process\_frame 調用 inference\_engine 和 tracker\_module 處理單幀。  
+3. **應用層:**  
+   * yolo\_service.py 運行帶有 visualizer 的完整視覺化應用。  
+   * count\_app.py 運行純數據處理和計數應用。
+
+YouTube / RTSP / File / Webcam  
+   ↓  
+FrameGrabber Thread (video\_source.py)  
+   ↓  
+YOLOService.process\_frame(frame)  
+   ↓  
+(inference\_engine, tracker\_module) 處理數據  
+   ↓  
+count\_app.py (計數)  /  yolo\_service.py (視覺化輸出)
+
+---
+
+## **❗ Troubleshooting**
+
+### **1\. onnxruntime 不兼容 (ImportError)**
+
+ImportError: cannot import name 'OrtDeviceMemoryType' from 'onnxruntime.capi.\_pybind\_state'
+
+這表示您的 onnxruntime 版本與您的 Python 3.12 環境不兼容。請執行以下命令強制更新：
+
+Bash
+
+pip uninstall \-y onnxruntime onnxruntime-gpu onnxruntime-directml  
 pip install onnxruntime-directml
-```
 
-If the installation still fails with “no matching distribution found,” make sure you are using **Python 3.10+ (64-bit)** on **Windows**.
+### **2\. 視訊源初始化失敗 (NameError: name 'grabber' is not defined)**
+
+NameError: name 'grabber' is not defined
+
+這通常發生在視訊源 (Webcam 或串流) 打開失敗時。yolo\_service.py 中的 grabber 變數在初始化失敗時未被賦值。請確保您的視訊源路徑正確，或嘗試使用 Webcam 索引 0。
+
+### **3\. Ctrl+C 無法立即退出**
+
+如果您的應用程式在按下 Ctrl+C 後卡住：  
+請確認在 video\_source.py 中，FrameGrabber 執行緒已被設置為 self.daemon \= True。這將確保主程式退出時強制終止讀取執行緒。
+
+\# video\_source.py  
+class FrameGrabber(threading.Thread):  
+    def \_\_init\_\_(self, ...):  
+        super().\_\_init\_\_()  
+        self.daemon \= True  \# 確保這行存在  
+        \# ...  
