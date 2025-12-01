@@ -9,8 +9,6 @@
 * ✅ **多種後端:** 支援 **AMD iGPU (DirectML)**, **Hailo-8 NPU**, 或 **CPU fallback**。
 * ✅ **豐富來源:** 支援 YouTube 連結, RTSP 串流, HTTP 視訊, 本地檔案或網路攝像頭。
 
-
-
 ---
 
 ## 🧰 Requirements
@@ -102,30 +100,9 @@ python count_app.py --source my_people.mp4 --process-every 5
 ImportError: cannot import name 'OrtDeviceMemoryType' from 'onnxruntime.capi._pybind_state'
 ```
 
-這表示您的 `onnxruntime` 版本與您的 Python 環境不兼容。請在您的虛擬環境中執行以下命令強制更新：
+這表示 `onnxruntime` 版本與你的 Python 環境不兼容。請在你的虛擬環境中執行以下命令強制更新：
 
 ```bash
 pip uninstall -y onnxruntime onnxruntime-gpu onnxruntime-directml
 pip install onnxruntime-directml
-```
-
-### 2\. 應用程式無法啟動 (NameError: name 'grabber' is not defined)
-
-這通常發生在視訊源初始化失敗時。請確保您的視訊源路徑正確，或 Webcam 可用。這個問題在最新的 `yolo_service.py` 中已通過初始化 `grabber = None` 修正。
-
-### 3\. Ctrl+C 無法立即退出
-
-如果您的應用程式在按下 Ctrl+C 後卡住：
-請確認在 `video_source.py` 中，`FrameGrabber` 執行緒已被設置為 `self.daemon = True`。
-
-```python
-# video_source.py
-class FrameGrabber(threading.Thread):
-    def __init__(self, ...):
-        super().__init__()
-        self.daemon = True
-        # ...
-```
-
-```
 ```
